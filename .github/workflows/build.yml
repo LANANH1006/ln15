@@ -4,9 +4,6 @@ on:
   push:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,20 +15,17 @@ jobs:
         shell: bash
         run: |
           set -e
-          DIR=""
           if [ -f build.gradle ]; then
             DIR="."
           else
             Z="$(ls -t *.zip 2>/dev/null | head -n 1 || true)"
-            if [ -z "$Z" ]; then echo "Khong co build.gradle va khong co file zip"; exit 1; fi
-            echo "Dung file: $Z"
+            [ -n "$Z" ] || { echo "Khong co build.gradle va khong co zip"; exit 1; }
             rm -rf proj && mkdir proj
             unzip -q -o "$Z" -d proj
-            B="$(find proj -name build.gradle -not -path '*/.git/*' | awk '{print length, $0}' | sort -n | head -n 1 | cut -d' ' -f2-)"
-            if [ -z "$B" ]; then echo "Khong tim thay build.gradle"; exit 1; fi
+            B="$(find proj -name build.gradle | awk '{print length, $0}' | sort -n | head -n 1 | cut -d' ' -f2-)"
+            [ -n "$B" ] || { echo "Khong tim thay build.gradle"; exit 1; }
             DIR="$(dirname "$B")"
           fi
-          echo "Source dir: $DIR"
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-java@v4
@@ -47,30 +41,26 @@ jobs:
         shell: bash
         working-directory: ${{ steps.src.outputs.dir }}
         run: |
-          set -o pipefail
-          gradle build --no-daemon --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          set +e
+          gradle build --no-daemon --console=plain > "$GITHUB_WORKSPACE/build.log" 2>&1
+          CODE=$?
+          if [ $CODE -ne 0 ]; then
+            MSG="$(grep -E -A12 'What went wrong|error:' "$GITHUB_WORKSPACE/build.log" | head -n 30 | tr '\n' '|' | sed 's/|/%0A/g')"
+            echo "::error title=LOI THAT::${MSG}"
+            echo '### LOI THAT' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -E -A12 'What went wrong|error:' "$GITHUB_WORKSPACE/build.log" | head -n 40 >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $CODE
 
       - name: Gom jar
         shell: bash
         working-directory: ${{ steps.src.outputs.dir }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          find build/libs -maxdepth 1 -name '*.jar' \
-            ! -name '*-sources.jar' ! -name '*-dev.jar' \
-            -exec cp -v {} "$GITHUB_WORKSPACE/dist/" \;
-          ls -la "$GITHUB_WORKSPACE/dist"
-          [ -n "$(ls -A "$GITHUB_WORKSPACE/dist")" ] || { echo "Khong co jar"; exit 1; }
-
-      - name: Loi (neu co)
-        if: failure()
-        shell: bash
-        run: |
-          {
-            echo '### Loi build'
-            echo '```'
-            grep -n -E "error:|FAILED|What went wrong|Could not|symbol:|location:" -A2 build.log | head -150 || true
-            echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          find build/libs -maxdepth 1 -name '*.jar' ! -name '*-sources.jar' ! -name '*-dev.jar' -exec cp {} "$GITHUB_WORKSPACE/dist/" \;
+          ls "$GITHUB_WORKSPACE/dist"
 
       - name: Upload log
         if: always()
