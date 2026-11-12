@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,12 +23,11 @@ jobs:
             DIR="."
           else
             Z="$(ls -t *.zip 2>/dev/null | head -n 1 || true)"
-            if [ -n "$Z" ]; then
-              echo "Dung file: $Z"
-              rm -rf proj && mkdir proj
-              unzip -q "$Z" -d proj
-            fi
-            B="$(find . -name build.gradle -not -path './.git/*' | head -n 1 || true)"
+            if [ -z "$Z" ]; then echo "Khong co build.gradle va khong co file zip"; exit 1; fi
+            echo "Dung file: $Z"
+            rm -rf proj && mkdir proj
+            unzip -q -o "$Z" -d proj
+            B="$(find proj -name build.gradle -not -path '*/.git/*' | awk '{print length, $0}' | sort -n | head -n 1 | cut -d' ' -f2-)"
             if [ -z "$B" ]; then echo "Khong tim thay build.gradle"; exit 1; fi
             DIR="$(dirname "$B")"
           fi
@@ -44,17 +46,29 @@ jobs:
       - name: Build
         shell: bash
         working-directory: ${{ steps.src.outputs.dir }}
-        run: gradle build --no-daemon --stacktrace 2>&1 | tee build.log
+        run: |
+          set -o pipefail
+          gradle build --no-daemon --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Gom jar
+        shell: bash
+        working-directory: ${{ steps.src.outputs.dir }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          find build/libs -maxdepth 1 -name '*.jar' \
+            ! -name '*-sources.jar' ! -name '*-dev.jar' \
+            -exec cp -v {} "$GITHUB_WORKSPACE/dist/" \;
+          ls -la "$GITHUB_WORKSPACE/dist"
+          [ -n "$(ls -A "$GITHUB_WORKSPACE/dist")" ] || { echo "Khong co jar"; exit 1; }
 
       - name: Loi (neu co)
         if: failure()
         shell: bash
-        working-directory: ${{ steps.src.outputs.dir }}
         run: |
           {
             echo '### Loi build'
             echo '```'
-            grep -n -E "error:|FAILED|What went wrong|Could not|symbol:|location:" -A2 build.log | head -150
+            grep -n -E "error:|FAILED|What went wrong|Could not|symbol:|location:" -A2 build.log | head -150 || true
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -63,15 +77,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: ${{ steps.src.outputs.dir }}/build.log
+          path: build.log
           if-no-files-found: ignore
 
       - name: Upload jar
         uses: actions/upload-artifact@v4
         with:
           name: LanAnhClient-jar
-          path: |
-            ${{ steps.src.outputs.dir }}/build/libs/*.jar
-            !${{ steps.src.outputs.dir }}/build/libs/*-sources.jar
-            !${{ steps.src.outputs.dir }}/build/libs/*-dev.jar
+          path: dist/*.jar
           if-no-files-found: error
